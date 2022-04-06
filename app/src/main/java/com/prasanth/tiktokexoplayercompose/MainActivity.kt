@@ -1,58 +1,52 @@
 package com.prasanth.tiktokexoplayercompose
 
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
 import com.google.accompanist.pager.ExperimentalPagerApi
 import com.google.accompanist.pager.HorizontalPager
 import com.google.accompanist.pager.rememberPagerState
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.SimpleExoPlayer
-import com.google.android.exoplayer2.ui.PlayerView
+import com.google.android.exoplayer2.source.MediaSource
+import com.google.android.exoplayer2.source.ProgressiveMediaSource
+import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.ui.StyledPlayerView
+import com.google.android.exoplayer2.upstream.DefaultDataSource
+import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
+import com.google.android.exoplayer2.upstream.cache.CacheDataSource
 import com.prasanth.tiktokexoplayercompose.ui.theme.TiktokExoplayerComposeTheme
 import com.prasanth.tiktokexoplayercompose.usecase.model.Entity
 import com.prasanth.tiktokexoplayercompose.usecase.model.Feed
+import com.prasanth.tiktokexoplayercompose.util.ExoplayerCache
 import com.prasanth.tiktokexoplayercompose.viewmodel.FeedViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.runBlocking
-import javax.inject.Inject
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -99,7 +93,9 @@ fun MainActivityScreen(feedViewModel:FeedViewModel =viewModel()) {
                }, text = {Text(text = "My Videos")})
            }
            HorizontalPager(state = pageState,modifier= Modifier.fillMaxSize()) {page->
-               tabView(entityState)
+               if (page==pageState.currentPage) {
+                   tabView(entityState)
+               }
            }
        }
     }
@@ -122,11 +118,11 @@ fun tabView(entity:State<Entity<List<Feed>>?>)
             Column() {
                 LazyColumn (state = listState){
                     if (entity.value!!.response!=null) {
-                        for (i in 0..entity.value!!.response?.size!!)
+                        for (i in 0 until entity.value!!.response?.size!!)
                         {
                            
                             item {
-                                getItem(entity.value!!.response?.get(i)!!,i==listState.firstVisibleItemIndex)
+                                getItem(entity.value!!.response?.get(i)!!,i, listState)
                             }
                         }
                     }
@@ -139,8 +135,7 @@ fun tabView(entity:State<Entity<List<Feed>>?>)
 }
 
 @Composable
-private fun getItem(entry: Feed,is_focused: Boolean) {
-
+private fun getItem(entry: Feed,position: Int,listState:LazyListState) {
     Column(modifier = Modifier.padding(10.dp)) {
         Image(
             painter = painterResource(id = R.drawable.ic_launcher_foreground),
@@ -151,7 +146,7 @@ private fun getItem(entry: Feed,is_focused: Boolean) {
                 .background(MaterialTheme.colors.primary)
         )
         Spacer(modifier = Modifier.size(5.dp))
-        if (!is_focused) {
+        if (position!=listState.firstVisibleItemIndex) {
             Box{
                 AsyncImage(
                 model = entry.preview,
@@ -169,11 +164,12 @@ private fun getItem(entry: Feed,is_focused: Boolean) {
                             Alignment.Center
                         )
                         .size(30.dp)
+                        .clickable { runBlocking { listState.scrollToItem(position) } }
                         )
 
             }
         }else{
-            MyPlayer(feed = entry, isFocused = is_focused)
+            MyPlayer(feed = entry, isFocused = position==listState.firstVisibleItemIndex)
         }
     }
 }
@@ -188,7 +184,16 @@ fun MyPlayer(feed: Feed,isFocused:Boolean) {
     val playerView = StyledPlayerView(context)
     val mediaItem = MediaItem.fromUri(sampleVideo)
     val playWhenReady = isFocused
-    player.setMediaItem(mediaItem)
+    val httpDataSourceFactory = DefaultHttpDataSource.Factory().setAllowCrossProtocolRedirects(true)
+    val defaultDataSourceFactory: DefaultDataSource.Factory = DefaultDataSource.Factory(context)
+    val cacheDataSourceFactory = CacheDataSource.Factory()
+        .setCache(ExoplayerCache.get(context = context))
+        .setUpstreamDataSourceFactory(defaultDataSourceFactory)
+        .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    val mediaSource: MediaSource = HlsMediaSource.Factory(cacheDataSourceFactory).createMediaSource(mediaItem)
+
+
+    player.setMediaSource(mediaSource)
     playerView.player = player
     LaunchedEffect(player) {
         player.prepare()
@@ -196,8 +201,6 @@ fun MyPlayer(feed: Feed,isFocused:Boolean) {
 
     }
     DisposableEffect(playerView) {
-
-
         onDispose {
             playerView.player = null
             player.release()
@@ -208,7 +211,12 @@ fun MyPlayer(feed: Feed,isFocused:Boolean) {
         playerView
     }, modifier = Modifier
         .fillMaxWidth()
-        .height(300.dp),){
+        .height(300.dp)
+        .onFocusChanged {
+            if (!it.hasFocus) {
+                player.pause()
+            }
+        }){
 
     }
 }
